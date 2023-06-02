@@ -1,0 +1,18 @@
+{
+    "name": "siyuan-plugin-tts",
+    "author": "zuoez02",
+    "url": "https://github.com/zuoez02/siyuan-plugin-tts",
+    "version": "0.1.0",
+    "minAppVersion": "2.8.10",
+    "displayName": {
+        "default": "Text To Speech",
+        "zh_CN": "文本朗读"
+    },
+    "description": {
+        "default": "Text To Speech for blocks in document",
+        "zh_CN": "使用块菜单中的文本朗读功能，朗读选择的块内容"
+    },
+    "readme": {
+        "default": "README.md"
+    }
+}
