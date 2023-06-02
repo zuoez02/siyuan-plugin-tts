@@ -216,8 +216,11 @@ class MsEdgeTTS {
     }
 
 
-    _rawSSMLRequest(requestSSML) {
+    async _rawSSMLRequest(requestSSML) {
         this._metadataCheck();
+        if (!this._ws || this._ws.readyState === 2 || this._ws.readyState === 3) {
+            await this._initClient();
+        }
 
         const requestId = randomBytes(16).toString("hex");
         const request = `X-RequestId:${requestId}\r\nContent-Type:application/ssml+xml\r\nPath:ssml\r\n\r\n
@@ -234,10 +237,17 @@ class MsEdgeTTS {
 
 }
 
+console.log('Plugin', Plugin);
+
 module.exports = class TTSPlugin extends Plugin {
     source;
+    tts;
+    loading = false;
+    metadata = ["zh-CN-XiaoxiaoNeural", "en-IE-ConnorNeural"];
+
     onload() {
         const tts = new MsEdgeTTS();
+        this.tts = tts;
         tts.setMetadata("zh-CN-XiaoxiaoNeural", OUTPUT_FORMAT.WEBM_24KHZ_16BIT_MONO_OPUS);
         // await tts.setMetadata("en-IE-ConnorNeural", OUTPUT_FORMAT.WEBM_24KHZ_16BIT_MONO_OPUS);
 
@@ -255,6 +265,8 @@ module.exports = class TTSPlugin extends Plugin {
             }
         });
 
+        this.addTTSStatusBar();
+
         const _this = this;
         this.eventBus.on("click-blockicon", ({ detail }) => {
             const blocks = detail.blockElements;
@@ -262,12 +274,14 @@ module.exports = class TTSPlugin extends Plugin {
             detail.menu.addItem({
                 icon: 'iconRecord',
                 label: this.i18n.menuName,
-                click: () => {
-                    const readable = tts.toStream(contents);
+                click: async() => {
+                    const readable = await tts.toStream(contents);
 
                     const context = new AudioContext();
                     const buffers = [];
 
+                    this.loading = true;
+                    this.statusChangeLoading();
                     readable.on("data", (data) => {
                         buffers.push(data);
                     });
@@ -291,6 +305,7 @@ module.exports = class TTSPlugin extends Plugin {
                             source.connect(context.destination);
                             // autoplay
                             source.start(0); // start was previously noteOn
+                            this.statusChangePlaying();
                         });
                     });
                 }
@@ -298,13 +313,73 @@ module.exports = class TTSPlugin extends Plugin {
         })
     }
 
+    addTTSStatusBar() {
+        const el = document.createElement("span");
+        el.innerHTML = `${this.i18n.title}: ${this.i18n.idle}`;
+        this.status = el;
+        if (!this.addStatusBar) {
+            return;
+        }
+        this.addStatusBar({
+            element: el,
+        });
+    }
+
+    updateStatus() {
+        if (this.loading) {
+            this.status.innerHTML = `${this.i18n.title}: ${this.i18n.loading}`;
+        } else if (this.playing) {
+            this.status.innerHTML = `${this.i18n.title}: ${this.i18n.playing}`;
+        } else {
+            this.status.innerHTML = `${this.i18n.title}: ${this.i18n.idle}`;
+        }
+    }
+
+    statusChangeLoading() {
+        this.loading = true;
+        this.playing = false;
+        this.updateStatus();
+    }
+
+    statusChangePlaying() {
+        this.loading = false;
+        this.playing = true;
+        this.updateStatus();
+    }
+
+    statusChangeIdle() {
+        this.loading = false;
+        this.playing = false;
+        this.updateStatus();
+    }
+
     addMenu(rect) {
         const menu = new Menu("ttsPluginTopBarMenu");
         menu.addItem({
             icon: "iconClose",
             label: this.i18n.stop,
-            click: () => this.source && this.source.stop(),
+            click: () => {
+                this.source && this.source.stop();
+                this.loading = false;
+                this.statusChangeIdle();
+            }
         });
+        const sumMenus = this.metadata.map((v) => {
+            return {
+                icon: '',
+                label: v,
+                click: () => {
+                    this.tts.setMetadata(v, OUTPUT_FORMAT.WEBM_24KHZ_16BIT_MONO_OPUS);
+                }
+            }
+        });
+
+        menu.addItem({
+            icon: '',
+            label: this.i18n.changeMetadata,
+            type: "submenu",
+            submenu: sumMenus,
+        })
         menu.open({
             x: rect.right,
             y: rect.bottom,

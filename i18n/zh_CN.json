@@ -1,5 +1,8 @@
 {
     "stop": "停止",
     "title": "文本朗读",
-    "menuName": "文本朗读"
+    "menuName": "文本朗读",
+    "changeMetadata": "切换声源",
+    "loading": "加载中...",
+    "idle": "空闲"
 }
