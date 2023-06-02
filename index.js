@@ -234,8 +234,117 @@ class MsEdgeTTS {
 
 }
 
+function toArrayBuffer(buf) {
+    const ab = new ArrayBuffer(buf.length);
+    const view = new Uint8Array(ab);
+    for (let i = 0; i < buf.length; ++i) {
+        view[i] = buf[i];
+    }
+    return ab;
+}
+
+class BufferPlayer {
+    arrayBuffer;
+
+    status = 0; // 0: not played; 1: playing; 2: ended
+
+    constructor(buffer) {
+        this.arrayBuffer = toArrayBuffer(buffer);
+        this.context = new AudioContext();
+        this.source = this.context.createBufferSource();
+        this.status = 0;
+    }
+
+    decodeAudioData(ab) {
+        return new Promise((resolve, reject) => {
+            this.context.decodeAudioData(ab, (b) => resolve(b), (err) => reject(err));
+        });
+    }
+
+    play() {
+        return new Promise(async(resolve, reject) => {
+            const b = await this.decodeAudioData(this.arrayBuffer);
+            this.source.buffer = b;
+            this.source.concat(this.context.destination);
+            this.source.start(0);
+            this.status = 1;
+
+            this.source.addEventListener('ended', () => {
+                if (this.status === 2) {
+                    // stopped
+                    reject('STOPPED');
+                } else {
+                    this.status = 2;
+                    this.source = null;
+                    resolve(null);
+                }
+            });
+        })
+    }
+
+    stop() {
+        this.source && this.source.stop();
+        this.status = 2;
+    }
+}
+
+class BufferPlayerController {
+    players;
+    current;
+    playing;
+
+    constructor() {
+        this.players = [];
+        this.current = 0;
+    }
+
+    append(player) {
+        this.players.push(player);
+    }
+
+    start() {
+        if (!this.playing) {
+            this.current = 0;
+            this.play();
+            this.playing = true;
+        }
+    }
+
+    async play() {
+        console.log('current', this.current);
+        const player = this.players[this.current];
+        if (player === null) {
+            // end
+            return;
+        }
+        if (player === undefined) {
+            // wait for next buffer
+            await this.sleep(1000);
+            this.play();
+            return;
+        }
+        try {
+            await player.play()
+            this.current++;
+            this.play();
+        } catch {
+            // stopped or else
+            return;
+        }
+    }
+
+    sleep(t) {
+        return new Promise((resolve) => setTimeout(resolve, t));
+    }
+
+    stop() {
+        const player = this.players[this.current];
+        player.stop();
+    }
+}
+
 module.exports = class TTSPlugin extends Plugin {
-    source;
+    current;
     onload() {
         const tts = new MsEdgeTTS();
         tts.setMetadata("zh-CN-XiaoxiaoNeural", OUTPUT_FORMAT.WEBM_24KHZ_16BIT_MONO_OPUS);
@@ -257,41 +366,29 @@ module.exports = class TTSPlugin extends Plugin {
 
         const _this = this;
         this.eventBus.on("click-blockicon", ({ detail }) => {
-            const blocks = detail.blockElements;
-            const contents = blocks.map((v) => v.textContent).join('\n');
             detail.menu.addItem({
                 icon: 'iconRecord',
                 label: this.i18n.menuName,
                 click: () => {
+                    if (_this.current) {
+                        _this.current.stop();
+                    }
+                    const blocks = detail.blockElements;
+                    const contents = blocks.map((v) => v.textContent).join('\n');
                     const readable = tts.toStream(contents);
-
-                    const context = new AudioContext();
-                    const buffers = [];
-
+                    const controller = new BufferPlayerController();
+                    _this.current = controller;
+                    let i = 0;
                     readable.on("data", (data) => {
-                        buffers.push(data);
+                        const player = new BufferPlayer(data);
+                        console.log(i++);
+                        controller.append(player);
+                        controller.start();
                     });
 
                     readable.on("close", () => {
-                        const b = Buffer.concat(buffers);
-
-                        function toArrayBuffer(buf) {
-                            const ab = new ArrayBuffer(buf.length);
-                            const view = new Uint8Array(ab);
-                            for (let i = 0; i < buf.length; ++i) {
-                                view[i] = buf[i];
-                            }
-                            return ab;
-                        }
-
-                        context.decodeAudioData(toArrayBuffer(b), (buffer) => {
-                            const source = context.createBufferSource();
-                            _this.source = source;
-                            source.buffer = buffer;
-                            source.connect(context.destination);
-                            // autoplay
-                            source.start(0); // start was previously noteOn
-                        });
+                        console.log('close');
+                        controller.append(null);
                     });
                 }
             })
