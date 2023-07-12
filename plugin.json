@@ -2,8 +2,8 @@
     "name": "siyuan-plugin-tts",
     "author": "zuoez02",
     "url": "https://github.com/zuoez02/siyuan-plugin-tts",
-    "version": "0.1.2",
-    "minAppVersion": "2.8.10",
+    "version": "0.2.0",
+    "minAppVersion": "2.9.4",
     "displayName": {
         "default": "Text To Speech",
         "zh_CN": "文本朗读"
