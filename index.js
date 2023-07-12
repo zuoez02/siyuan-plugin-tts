@@ -376,7 +376,8 @@ class Player {
     if (this.loadPromise) {
       return this.loadPromise;
     }
-    this.enableLogger && console.log(`[Player]\tloading block: '${this.content}'`);
+    this.enableLogger &&
+      console.log(`[Player]\tloading block: '${this.content}'`);
     const context = new AudioContext();
     const buffers = [];
     this.loading = true;
@@ -535,7 +536,9 @@ class Controller {
         this.playIndex
       );
     this.plugin.setStatus(
-      `正在播放块, 编号: ${this.playIndex + 1}; 剩余未播放缓存: ${this.players.length}`
+      `正在播放块, 编号: ${this.playIndex + 1}; 剩余未播放缓存: ${
+        this.players.length
+      }`
     );
     await player.play();
     this.enableLogger &&
@@ -571,11 +574,30 @@ class Controller {
 }
 
 module.exports = class TTSPlugin extends Plugin {
-  metadata = ["zh-CN-XiaoxiaoNeural", "en-IE-ConnorNeural"];
+  metadataMap = {
+    '晓晓-中文女声': 'zh-CN-XiaoxiaoNeural',
+    '云曦-中文男声': 'zh-CN-YunxiNeural',
+    '云阳-中文男声': 'zh-CN-YunyangNeural',
+    'Connor-英文男声': 'en-IE-ConnorNeural',
+  }
+
+  untestedMetadata = [];
 
   currentMetadata = DEFAULT_VOICE;
 
+  async loadStorage() {
+    const config = await this.loadData('config.json');
+    if (config) {
+        this.currentMetadata = config.currentMetadata;
+    }
+  }
+
+  async saveStorage() {
+    await this.saveData('config.json', JSON.stringify({ currentMetadata: this.currentMetadata}));
+  }
+
   onload() {
+    this.loadStorage();
     this.controller = null;
 
     this.status = this.i18n.title;
@@ -626,12 +648,13 @@ module.exports = class TTSPlugin extends Plugin {
         this.controller && this.controller.stop();
       },
     });
-    const sumMenus = this.metadata.map((v) => {
+    const sumMenus = Object.keys(this.metadataMap).map((v) => {
       return {
-        icon: "",
+        icon: this.metadataMap[v] === this.currentMetadata ? 'iconSelect' : '',
         label: v,
         click: () => {
-          this.currentMetadata = v;
+          this.currentMetadata = this.metadataMap[v];
+          this.saveStorage();
         },
       };
     });
