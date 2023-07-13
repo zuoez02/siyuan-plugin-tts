@@ -414,6 +414,17 @@ class Player {
     return this.loadPromise;
   }
 
+  async setRate(rate) {
+    if (!this.loaded) {
+      await this.load(this.block);
+    }
+    if (this.isEmpty) {
+      return Promise.resolve();
+    }
+    console.log(this.source);
+    this.source.playbackRate.value = rate;
+  }
+
   async play() {
     if (!this.loaded) {
       await this.load(this.block);
@@ -471,13 +482,15 @@ class Controller {
   playIndex;
   cacheIndex;
 
-  constructor(voice, plugin, enableLogger) {
+  constructor(config, plugin, enableLogger) {
     this.enableLogger = enableLogger;
     this.plugin = plugin;
     this.init();
     this.maxCache = 3;
     this.tts = new MsEdgeTTS(false);
-    this.tts.setMetadata(voice, OUTPUT_FORMAT.WEBM_24KHZ_16BIT_MONO_OPUS);
+    const { currentMetadata, playbackRate } = config;
+    this.playbackRate = playbackRate;
+    this.tts.setMetadata(currentMetadata, OUTPUT_FORMAT.WEBM_24KHZ_16BIT_MONO_OPUS);
   }
 
   changeMetadata(voice) {
@@ -540,6 +553,7 @@ class Controller {
         this.players.length
       }`
     );
+    await player.setRate(this.playbackRate);
     await player.play();
     this.enableLogger &&
       console.log("[Controller]\tplayed =>>>", player.content, this.playIndex);
@@ -585,15 +599,21 @@ module.exports = class TTSPlugin extends Plugin {
 
   currentMetadata = DEFAULT_VOICE;
 
+  playbackRate = 1;
+
   async loadStorage() {
     const config = await this.loadData('config.json');
     if (config) {
-        this.currentMetadata = config.currentMetadata;
+        this.currentMetadata = config.currentMetadata || DEFAULT_VOICE;
+        this.playbackRate = config.playbackRate || 1;
     }
   }
 
   async saveStorage() {
-    await this.saveData('config.json', JSON.stringify({ currentMetadata: this.currentMetadata}));
+    await this.saveData('config.json', JSON.stringify({
+      currentMetadata: this.currentMetadata,
+      playbackRate: this.playbackRate,
+    }));
   }
 
   onload() {
@@ -624,7 +644,10 @@ module.exports = class TTSPlugin extends Plugin {
           if (this.controller) {
             this.controller.stop();
           }
-          this.controller = new Controller(this.currentMetadata, this, false);
+          this.controller = new Controller({
+            currentMetadata: this.currentMetadata,
+            playbackRate: this.playbackRate
+          }, this, false);
           this.controller.loadBlocks(blocks);
           this.controller.play();
         },
@@ -670,6 +693,24 @@ module.exports = class TTSPlugin extends Plugin {
       y: rect.bottom,
       isLeft: true,
     });
+
+    const playRateMenus = [0.5, 0.6, 0.7, 0.8, 0.9, 1, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2, 3, 5, 10].map((v) => {
+      return {
+        icon: v === this.playbackRate ? 'iconSelect' : '',
+        label: v,
+        click: () => {
+          this.playbackRate = v;
+          this.saveStorage();
+        },
+      };
+    });
+
+    menu.addItem({
+      icon: '',
+      label: this.i18n.playbackRate,
+      type: 'submenu',
+      submenu: playRateMenus,
+    })
   }
 
   addStatus() {

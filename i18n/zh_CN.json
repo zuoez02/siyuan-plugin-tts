@@ -4,5 +4,6 @@
     "menuName": "文本朗读",
     "changeMetadata": "切换声源",
     "loading": "加载中...",
+    "playbackRate": "播放速率",
     "idle": "空闲"
 }

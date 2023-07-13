@@ -4,5 +4,6 @@
     "menuName": "Text To Speech",
     "changeMetadata": "Change Speaker",
     "loading": "Loading records...",
+    "playbackRate": "Playback rate",
     "idle": "idle"
 }
