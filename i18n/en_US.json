@@ -8,5 +8,6 @@
     "playbackRate": "Playback rate",
     "idle": "idle",
     "resume": "Resume",
-    "pause": "Pause"
+    "pause": "Pause",
+    "scrollToCurrent": "Scroll to current block"
 }

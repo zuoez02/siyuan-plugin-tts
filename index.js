@@ -821,7 +821,7 @@ module.exports = class TTSPlugin extends Plugin {
     // Add scroll to current block menu item
     menu.addItem({
       icon: "iconFocus",
-      label: this.i18n.scrollToCurrent || "跳转到当前播放块",
+      label: this.i18n.scrollToCurrent || "滚动到当前播放块",
       click: () => {
         if (this.controller && this.controller.blocks && this.controller.playIndex > 0) {
           const currentBlock = this.controller.blocks[this.controller.playIndex - 1];
