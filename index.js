@@ -818,6 +818,23 @@ module.exports = class TTSPlugin extends Plugin {
       },
     });
 
+    // Add scroll to current block menu item
+    menu.addItem({
+      icon: "iconFocus",
+      label: this.i18n.scrollToCurrent || "跳转到当前播放块",
+      click: () => {
+        if (this.controller && this.controller.blocks && this.controller.playIndex > 0) {
+          const currentBlock = this.controller.blocks[this.controller.playIndex - 1];
+          if (currentBlock && currentBlock.el) {
+            // 需要currentBlock.el获取data-node-id，再查询
+            const nodeId = currentBlock.el.getAttribute("data-node-id");
+            let el2 = document.querySelector(`.protyle-wysiwyg [data-node-id="${nodeId}"]`);
+            el2.scrollIntoView({ behavior: "smooth", block: "center" });
+          }
+        }
+      }
+    });
+
     menu.addItem({
       icon: "iconClose", 
       label: this.i18n.stop,
