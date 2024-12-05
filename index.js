@@ -637,23 +637,6 @@ class Controller {
       this.isPaused = false;
     }
   }
-
-  previousBlock() {
-    if (this.playIndex > 0) {
-      this.stop();
-      this.playIndex = Math.max(0, this.playIndex - 2);
-      this.cacheIndex = this.playIndex;
-      this.play();
-    }
-  }
-
-  nextBlock() {
-    if (this.playIndex < this.blocks.length - 1) {
-      this.stop();
-      this.cacheIndex = this.playIndex;
-      this.play();
-    }
-  }
 }
 
 module.exports = class TTSPlugin extends Plugin {
