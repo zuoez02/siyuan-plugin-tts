@@ -582,9 +582,7 @@ class Controller {
         this.playIndex
       );
     this.plugin.setStatus(
-      `正在播放块, 编号: ${this.playIndex + 1}; 剩余未播放缓存: ${
-        this.players.length
-      }`
+      `正在播放块: ${this.playIndex + 1}/${this.blocks.length}`
     );
     await player.setRate(this.playbackRate);
     await player.play();
