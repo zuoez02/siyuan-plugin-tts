@@ -728,14 +728,14 @@ module.exports = class TTSPlugin extends Plugin {
           // Filter blocks from current to end
           let allBlocks = [];
           let currentFound = false;
-          doc.body.querySelectorAll('[data-node-id]').forEach(block => {
-            if(block.getAttribute('data-node-id') === currentBlockId) {
-              currentFound = true;
-            }
-            if(currentFound) {
-              allBlocks.push(block);
-            }
-          });
+            Array.from(doc.body.children).forEach(block => {
+              if(block.getAttribute('data-node-id') === currentBlockId) {
+                currentFound = true;
+              }
+              if(currentFound) {
+                allBlocks.push(block);
+              }
+            });
 
           this.controller = new Controller({
             currentMetadata: this.currentMetadata,
