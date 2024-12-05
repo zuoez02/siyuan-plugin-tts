@@ -570,7 +570,7 @@ class Controller {
     }
 
     // Update play icon to pause icon when starting playback
-    const iconEl = document.querySelector('.tts-nav-btn use');
+    const iconEl = document.querySelector('.tts-nav-btn[data-type="pause"] use');
     if (iconEl) {
       iconEl.setAttribute('xlink:href', '#iconPause');
     }
@@ -609,7 +609,7 @@ class Controller {
       block.unhighlight();
     }
     // Reset icon back to record when stopped
-    const iconEl = document.querySelector('.tts-nav-btn use');
+    const iconEl = document.querySelector('.tts-nav-btn[data-type="pause"] use');
     if (iconEl) {
       iconEl.setAttribute('xlink:href', '#iconRecord'); 
     }
@@ -878,7 +878,7 @@ module.exports = class TTSPlugin extends Plugin {
     </div>`;
 
     const element = this.statusIconTemp.content.firstElementChild;
-    
+
     // Add click handlers for navigation buttons
 
     element.querySelector('[data-type="pause"]').addEventListener('click', () => {
