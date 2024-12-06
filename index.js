@@ -475,23 +475,15 @@ class Block {
   }
 
   highlight() {
-    // 用queryselector查找el，先获取el的data-node-id，然后再用queryselector找到对应的元素
     const nodeId = this.el.getAttribute("data-node-id");
     let el2 = document.querySelector(`.protyle-wysiwyg [data-node-id="${nodeId}"]`);
-    el2.setAttribute(
-      "style",
-      "border: 1px solid var(--tts-plugin-hightlight)"
-    );
+    el2.classList.add("tts-highlight");
   }
 
   unhighlight() {
-    // 用queryselector查找el，先获取el的data-node-id，然后再用queryselector找到对应的元素
     const nodeId = this.el.getAttribute("data-node-id");
     let el2 = document.querySelector(`.protyle-wysiwyg [data-node-id="${nodeId}"]`);
-    el2.setAttribute(
-      "style",
-      "border: none"
-    );
+    el2.classList.remove("tts-highlight");
   }
 }
 
@@ -802,6 +794,7 @@ module.exports = class TTSPlugin extends Plugin {
     });
 
     this.addStatus();
+
   }
 
   async  fetchSyncPost(url, data, returnType = 'json') {
