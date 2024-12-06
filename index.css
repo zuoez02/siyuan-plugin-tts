@@ -1,3 +1,7 @@
 :root {
     --tts-plugin-hightlight: var(--b3-theme-primary);
 }
+
+.tts-highlight {
+    border: 1px solid var(--tts-plugin-hightlight) !important;
+}
