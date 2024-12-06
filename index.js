@@ -445,6 +445,18 @@ class Player {
   stop() {
     this.source && this.source.stop();
   }
+
+  pause() {
+    if (this.source && this.source.context) {
+      this.source.context.suspend();
+    }
+  }
+
+  resume() {
+    if (this.source && this.source.context) {
+      this.source.context.resume();
+    }
+  }
 }
 
 class Block {
@@ -467,10 +479,24 @@ class Block {
       "style",
       "border: 1px solid var(--tts-plugin-hightlight)"
     );
+    // 用queryselector查找el，先获取el的data-node-id，然后再用queryselector找到对应的元素
+    const nodeId = this.el.getAttribute("data-node-id");
+    let el2 = document.querySelector(`.protyle-wysiwyg [data-node-id="${nodeId}"]`);
+    el2.setAttribute(
+      "style",
+      "border: 1px solid var(--tts-plugin-hightlight)"
+    );
   }
 
   unhighlight() {
     this.el.setAttribute("style", "border: none");
+    // 用queryselector查找el，先获取el的data-node-id，然后再用queryselector找到对应的元素
+    const nodeId = this.el.getAttribute("data-node-id");
+    let el2 = document.querySelector(`.protyle-wysiwyg [data-node-id="${nodeId}"]`);
+    el2.setAttribute(
+      "style",
+      "border: none"
+    );
   }
 }
 
@@ -542,6 +568,13 @@ class Controller {
       this.plugin.setStatus("播放完成, 已停止");
       return;
     }
+
+    // Update play icon to pause icon when starting playback
+    const iconEl = document.querySelector('.tts-nav-btn[data-type="pause"] use');
+    if (iconEl) {
+      iconEl.setAttribute('xlink:href', '#iconPause');
+    }
+
     this.enableLogger &&
       console.log(
         "[Controller]\tplaying =>>> ",
@@ -549,9 +582,7 @@ class Controller {
         this.playIndex
       );
     this.plugin.setStatus(
-      `正在播放块, 编号: ${this.playIndex + 1}; 剩余未播放缓存: ${
-        this.players.length
-      }`
+      `正在播放块: ${this.playIndex + 1}/${this.blocks.length}`
     );
     await player.setRate(this.playbackRate);
     await player.play();
@@ -575,6 +606,11 @@ class Controller {
     if (block) {
       block.unhighlight();
     }
+    // Reset icon back to record when stopped
+    const iconEl = document.querySelector('.tts-nav-btn[data-type="pause"] use');
+    if (iconEl) {
+      iconEl.setAttribute('xlink:href', '#iconRecord'); 
+    }
     this.init();
   }
 
@@ -584,6 +620,20 @@ class Controller {
     this.index = 0;
     this.cacheIndex = 0;
     this.playIndex = 0;
+  }
+
+  pause() {
+    if (this.players && this.players[0]) {
+      this.players[0].pause();
+      this.isPaused = true;
+    }
+  }
+
+  resume() {
+    if (this.players && this.players[0]) {
+      this.players[0].resume();
+      this.isPaused = false;
+    }
   }
 }
 
@@ -642,6 +692,71 @@ module.exports = class TTSPlugin extends Plugin {
         label: this.i18n.menuName,
         click: async () => {
           if (this.controller) {
+            this.controller.stop(); 
+          }
+          this.controller = new Controller({
+            currentMetadata: this.currentMetadata,
+            playbackRate: this.playbackRate
+          }, this, false);
+          this.controller.loadBlocks(blocks);
+          this.controller.play();
+        },
+      });
+
+      // Add new menu item for reading from current to end
+      detail.menu.addItem({
+        icon: "iconRecord", 
+        label: this.i18n.menuToEnd,
+        click: async () => {
+          if (this.controller) {
+            this.controller.stop();
+          }
+
+          // Get current block ID
+          const currentBlockId = blocks[0].getAttribute('data-node-id');
+          // Get root block ID (document ID)
+          const rootID = detail.protyle.block.rootID
+          
+          // Get full document DOM
+          let res = await this.fetchSyncPost("/api/block/getBlockDOM", { id: rootID });
+          let dom = res.data.dom;
+          let parser = new DOMParser();
+          let doc = parser.parseFromString(dom, "text/html");
+          
+          // Filter blocks from current to end
+          let allBlocks = [];
+          let currentFound = false;
+            Array.from(doc.body.children).forEach(block => {
+              if(block.getAttribute('data-node-id') === currentBlockId) {
+                currentFound = true;
+              }
+              if(currentFound) {
+                allBlocks.push(block);
+              }
+            });
+
+          this.controller = new Controller({
+            currentMetadata: this.currentMetadata,
+            playbackRate: this.playbackRate
+          }, this, false);
+          this.controller.loadBlocks(allBlocks);
+          this.controller.play();
+        },
+      });
+    });
+    
+    this.eventBus.on("click-editortitleicon", async ({ detail }) => {
+      detail.menu.addItem({
+        icon: "iconRecord",
+        label: this.i18n.menuName,
+        click: async () => {
+          const docID = detail.protyle.block.rootID;
+          let res = await this.fetchSyncPost("/api/block/getBlockDOM", { id: docID });
+          let dom = res.data.dom;
+          let parser = new DOMParser();
+          let doc = parser.parseFromString(dom, "text/html");
+          let blocks = Array.from(doc.body.children);
+          if (this.controller) {
             this.controller.stop();
           }
           this.controller = new Controller({
@@ -657,6 +772,28 @@ module.exports = class TTSPlugin extends Plugin {
     this.addStatus();
   }
 
+  async  fetchSyncPost(url, data, returnType = 'json') {
+    const init = {
+      method: "POST",
+    };
+    if (data) {
+      if (data instanceof FormData) {
+        init.body = data;
+      } else {
+        init.body = JSON.stringify(data);
+      }
+    }
+    try {
+      const res = await fetch(url, init);
+      const res2 = returnType === 'json' ? await res.json() : await res.text();
+      return res2;
+    } catch (e) {
+      console.log(e);
+      return returnType === 'json' ? { code: e.code || 1, msg: e.message || "", data: null } : "";
+    }
+}
+
+
   setStatus(content) {
     this.status = content;
     this.updateStatus(content);
@@ -664,13 +801,46 @@ module.exports = class TTSPlugin extends Plugin {
 
   addMenu(rect) {
     const menu = new Menu("ttsPluginTopBarMenu");
+    
     menu.addItem({
-      icon: "iconClose",
+      icon: "iconPause",
+      label: this.isPaused ? this.i18n.resume : this.i18n.pause,
+      click: () => {
+        if (this.controller) {
+          if (this.controller.isPaused) {
+            this.controller.resume();
+          } else {
+            this.controller.pause();
+          }
+        }
+      },
+    });
+
+    // Add scroll to current block menu item
+    menu.addItem({
+      icon: "iconFocus",
+      label: this.i18n.scrollToCurrent || "滚动到当前播放块",
+      click: () => {
+        if (this.controller && this.controller.blocks && this.controller.playIndex > 0) {
+          const currentBlock = this.controller.blocks[this.controller.playIndex - 1];
+          if (currentBlock && currentBlock.el) {
+            // 需要currentBlock.el获取data-node-id，再查询
+            const nodeId = currentBlock.el.getAttribute("data-node-id");
+            let el2 = document.querySelector(`.protyle-wysiwyg [data-node-id="${nodeId}"]`);
+            el2.scrollIntoView({ behavior: "smooth", block: "center" });
+          }
+        }
+      }
+    });
+
+    menu.addItem({
+      icon: "iconClose", 
       label: this.i18n.stop,
       click: () => {
         this.controller && this.controller.stop();
       },
     });
+
     const sumMenus = Object.keys(this.metadataMap).map((v) => {
       return {
         icon: this.metadataMap[v] === this.currentMetadata ? 'iconSelect' : '',
@@ -716,17 +886,34 @@ module.exports = class TTSPlugin extends Plugin {
   addStatus() {
     this.statusIconTemp = document.createElement("template");
     this.statusIconTemp.innerHTML = `<div class="toolbar__item">
-    <svg>
-        <use xlink:href="#iconRecord"></use>
-    </svg>
-    <span id="tts-content">${this.i18n.title}</span>
-</div>`;
+      <span class="tts-nav-btn" data-type="pause">
+        <svg><use xlink:href="#iconRecord"></use></svg>
+      </span>
+      <span id="tts-content">${this.i18n.title}</span>
+    </div>`;
+
+    const element = this.statusIconTemp.content.firstElementChild;
+
+    // Add click handlers for navigation buttons
+
+    element.querySelector('[data-type="pause"]').addEventListener('click', () => {
+      if (this.controller) {
+        if (this.controller.isPaused) {
+          this.controller.resume();
+          element.querySelector('[data-type="pause"] use').setAttribute('xlink:href', '#iconPause');
+        } else {
+          this.controller.pause();
+          element.querySelector('[data-type="pause"] use').setAttribute('xlink:href', '#iconPlay');
+        }
+      }
+    });
+
 
     this.addStatusBar({
-      element: this.statusIconTemp.content.firstElementChild,
+      element: element,
     });
-    this.statusIconTemp =
-      this.statusIconTemp.content.firstElementChild.querySelector("span");
+    
+    this.statusIconTemp = element.querySelector("#tts-content");
   }
 
   updateStatus(content) {

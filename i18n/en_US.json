@@ -2,8 +2,12 @@
     "stop": "Stop TTS",
     "title": "Text To Speech",
     "menuName": "Text To Speech",
+    "menuToEnd": "Text To Speech (from current block to end)",
     "changeMetadata": "Change Speaker",
     "loading": "Loading records...",
     "playbackRate": "Playback rate",
-    "idle": "idle"
+    "idle": "idle",
+    "resume": "Resume",
+    "pause": "Pause",
+    "scrollToCurrent": "Scroll to current block"
 }

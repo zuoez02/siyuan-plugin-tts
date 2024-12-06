@@ -2,8 +2,12 @@
     "stop": "停止",
     "title": "文本朗读",
     "menuName": "文本朗读",
+    "menuToEnd": "文本朗读（从当前块到末尾）" ,
     "changeMetadata": "切换声源",
     "loading": "加载中...",
     "playbackRate": "播放速率",
-    "idle": "空闲"
+    "idle": "空闲",
+    "resume": "继续",
+    "pause": "暂停",
+    "scrollToCurrent": "滚动到当前播放块"
 }
