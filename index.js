@@ -475,10 +475,6 @@ class Block {
   }
 
   highlight() {
-    this.el.setAttribute(
-      "style",
-      "border: 1px solid var(--tts-plugin-hightlight)"
-    );
     // 用queryselector查找el，先获取el的data-node-id，然后再用queryselector找到对应的元素
     const nodeId = this.el.getAttribute("data-node-id");
     let el2 = document.querySelector(`.protyle-wysiwyg [data-node-id="${nodeId}"]`);
@@ -489,7 +485,6 @@ class Block {
   }
 
   unhighlight() {
-    this.el.setAttribute("style", "border: none");
     // 用queryselector查找el，先获取el的data-node-id，然后再用queryselector找到对应的元素
     const nodeId = this.el.getAttribute("data-node-id");
     let el2 = document.querySelector(`.protyle-wysiwyg [data-node-id="${nodeId}"]`);
@@ -686,7 +681,25 @@ module.exports = class TTSPlugin extends Plugin {
     });
 
     this.eventBus.on("click-blockicon", ({ detail }) => {
-      const blocks = detail.blockElements;
+      let blocks = detail.blockElements;
+      // 把blocks是array，要变为普通dom，去除元素不影响原来内容
+      // Convert blocks to plain DOM elements
+      blocks = blocks.map(block => {
+        // Skip code blocks
+        if (block.classList.contains('code-block')) {
+          return null;
+        }
+
+        // Create a deep clone of the block
+        let clone = block.cloneNode(true);
+        
+        // Remove sup spans from clone
+        let sups = clone.querySelectorAll('span[data-type*="sup"]');
+        sups.forEach(sup => sup.remove());
+
+        return clone;
+      }).filter(block => block !== null); // Remove null entries
+
       detail.menu.addItem({
         icon: "iconRecord",
         label: this.i18n.menuName,
@@ -722,7 +735,16 @@ module.exports = class TTSPlugin extends Plugin {
           let dom = res.data.dom;
           let parser = new DOMParser();
           let doc = parser.parseFromString(dom, "text/html");
-          
+          // 把doc里所有span[data-type*="sup"]去除
+          let spans = doc.querySelectorAll('span[data-type*="sup"]');
+          spans.forEach(span => {
+            span.remove();
+          });
+          // 把doc里所有代码块去除
+          let codes = doc.querySelectorAll('div[data-type="NodeCodeBlock"]');
+          codes.forEach(code => {
+            code.remove();
+          });
           // Filter blocks from current to end
           let allBlocks = [];
           let currentFound = false;
@@ -755,6 +777,16 @@ module.exports = class TTSPlugin extends Plugin {
           let dom = res.data.dom;
           let parser = new DOMParser();
           let doc = parser.parseFromString(dom, "text/html");
+          // 把doc里所有span[data-type*="sup"]去除
+          let spans = doc.querySelectorAll('span[data-type*="sup"]');
+          spans.forEach(span => {
+            span.remove();
+          });
+          // 把doc里所有代码块去除
+          let codes = doc.querySelectorAll('div[data-type="NodeCodeBlock"]');
+          codes.forEach(code => {
+            code.remove();
+          });
           let blocks = Array.from(doc.body.children);
           if (this.controller) {
             this.controller.stop();
