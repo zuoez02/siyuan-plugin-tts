@@ -852,7 +852,7 @@ module.exports = class TTSPlugin extends Plugin {
             // 需要currentBlock.el获取data-node-id，再查询
             const nodeId = currentBlock.el.getAttribute("data-node-id");
             let el2 = document.querySelector(`.protyle-wysiwyg [data-node-id="${nodeId}"]`);
-            el2.scrollIntoView({ behavior: "smooth", block: "center" });
+            el2.scrollIntoView({ behavior: "smooth", block: "start" });
           }
         }
       }
