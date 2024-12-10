@@ -11,6 +11,8 @@
 
 ## Changelog 变更记录
 
+v0.2.7 - PR from Achuan, thanks for contribution
+
 v0.2.6 - PR from Achuan, thanks for contribution
 
 - 添加暂停按钮
