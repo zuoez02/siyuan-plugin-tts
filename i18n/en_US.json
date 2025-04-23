@@ -9,5 +9,6 @@
     "idle": "idle",
     "resume": "Resume",
     "pause": "Pause",
+    "quickOpen": "Read the currently selected content",
     "scrollToCurrent": "Scroll to current block"
 }

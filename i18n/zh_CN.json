@@ -9,5 +9,6 @@
     "idle": "空闲",
     "resume": "继续",
     "pause": "暂停",
+    "quickOpen": "朗读当前选中内容",
     "scrollToCurrent": "滚动到当前播放块"
 }

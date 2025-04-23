@@ -1,4 +1,4 @@
-const { Plugin, Menu } = require("siyuan");
+const { Plugin, Menu, showMessage } = require("siyuan");
 
 const OUTPUT_FORMAT = {
   RAW_16KHZ_16BIT_MONO_PCM: "raw-16khz-16bit-mono-pcm",
@@ -28,8 +28,27 @@ const OUTPUT_FORMAT = {
   OGG_48KHZ_16BIT_MONO_OPUS: "ogg-48khz-16bit-mono-opus",
 };
 
-const { randomBytes } = window.require("crypto");
+const { randomBytes, createHash } = window.require("crypto");
 const stream = window.require("stream");
+
+const CHROMIUM_FULL_VERSION = '130.0.2849.68'
+const TRUSTED_CLIENT_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4'
+const WINDOWS_FILE_TIME_EPOCH = 11644473600n
+const SEC_MS_GEC_Version = "1-130.0.2849.68";
+
+function generateSecMsGecToken() {
+  const ticks = BigInt(Math.floor((Date.now() / 1000) + Number(WINDOWS_FILE_TIME_EPOCH))) * 10000000n
+  const roundedTicks = ticks - (ticks % 3000000000n)
+  const strToHash = `${roundedTicks}${TRUSTED_CLIENT_TOKEN}`
+  const hash = createHash('sha256')
+  hash.update(strToHash, 'ascii')
+  return hash.digest('hex').toUpperCase()
+}
+
+
+function combineUrl(url) {
+  return `${url}&Sec-MS-GEC=${generateSecMsGecToken()}&Sec-MS-GEC-Version=${SEC_MS_GEC_Version}`
+}
 
 class MsEdgeTTS {
   static OUTPUT_FORMAT = OUTPUT_FORMAT;
@@ -130,7 +149,7 @@ class MsEdgeTTS {
         }
       };
       let i = 0;
-      this._ws = new WebSocket(MsEdgeTTS.SYNTH_URL);
+      this._ws = new WebSocket(combineUrl(MsEdgeTTS.SYNTH_URL));
       this._ws.onmessage = (m) => {
         if (typeof m.data === "string") {
           // const data = m.data;
@@ -246,7 +265,7 @@ class MsEdgeTTS {
    */
   getVoices() {
     return new Promise((resolve, reject) => {
-      fetch(MsEdgeTTS.VOICES_URL, { method: "GET" })
+      fetch(combineUrl(MsEdgeTTS.VOICES_URL), { method: "GET" })
         .then((res) => resolve(res.data))
         .catch(reject);
     });
@@ -324,7 +343,7 @@ class MsEdgeTTS {
                 ` + requestSSML.trim();
     // https://docs.microsoft.com/en-us/azure/cognitive-services/speech-service/speech-synthesis-markup
     const readable = new stream.Readable({
-      read() {},
+      read() { },
     });
     this._requestContent[requestId] = requestSSML.trim().split("\n")[2].trim();
     this._queue[requestId] = readable;
@@ -365,6 +384,7 @@ class Player {
     this.id = new Date().getTime();
   }
 
+  // load block: block obj or string
   async load(block) {
     this.isEmpty = block.isEmpty();
     if (this.isEmpty) {
@@ -421,7 +441,6 @@ class Player {
     if (this.isEmpty) {
       return Promise.resolve();
     }
-    console.log(this.source);
     this.source.playbackRate.value = rate;
   }
 
@@ -462,7 +481,12 @@ class Player {
 class Block {
   constructor(blockElement) {
     if (!blockElement) {
-      throw Error("Block constructor must has 1 parameter blockElement");
+      throw Error("Block constructor must has 1 parameter blockElement or string content");
+    }
+    if (typeof blockElement === 'string') {
+      this.content = blockElement;
+      this.el = null;
+      return;
     }
     this.el = blockElement;
     this.content = blockElement.textContent
@@ -475,6 +499,9 @@ class Block {
   }
 
   highlight() {
+    if (!this.el) {
+      return;
+    }
     const nodeId = this.el.getAttribute("data-node-id");
     let el2 = document.querySelector(`.protyle-wysiwyg [data-node-id="${nodeId}"]`);
     if (el2) {
@@ -483,6 +510,9 @@ class Block {
   }
 
   unhighlight() {
+    if (!this.el) {
+      return;
+    }
     const nodeId = this.el.getAttribute("data-node-id");
     let el2 = document.querySelector(`.protyle-wysiwyg [data-node-id="${nodeId}"]`);
     if (el2) {
@@ -516,6 +546,13 @@ class Controller {
 
   loadBlocks(blockElements) {
     this.blocks = blockElements.map((v) => new Block(v));
+  }
+
+  loadContent(content) {
+    if (typeof content !== 'string') {
+      throw Error("loadContent must have a string parameter")
+    }
+    this.blocks = [new Block(content)];
   }
 
   async play() {
@@ -600,7 +637,7 @@ class Controller {
     // Reset icon back to record when stopped
     const iconEl = document.querySelector('.tts-nav-btn[data-type="pause"] use');
     if (iconEl) {
-      iconEl.setAttribute('xlink:href', '#iconRecord'); 
+      iconEl.setAttribute('xlink:href', '#iconRecord');
     }
     this.init();
   }
@@ -645,8 +682,8 @@ module.exports = class TTSPlugin extends Plugin {
   async loadStorage() {
     const config = await this.loadData('config.json');
     if (config) {
-        this.currentMetadata = config.currentMetadata || DEFAULT_VOICE;
-        this.playbackRate = config.playbackRate || 1;
+      this.currentMetadata = config.currentMetadata || DEFAULT_VOICE;
+      this.playbackRate = config.playbackRate || 1;
     }
   }
 
@@ -662,6 +699,34 @@ module.exports = class TTSPlugin extends Plugin {
     this.controller = null;
 
     this.status = this.i18n.title;
+
+    this.addCommand({
+      langKey: "quickOpen",
+      hotkey: "⌥⌘W",
+      callback: () => {
+        // 如果有鼠标框选的内容，朗读这些
+        const content = window.getSelection().toString();
+        if (content) {
+          this.controller = new Controller({
+            currentMetadata: this.currentMetadata,
+            playbackRate: this.playbackRate
+          }, this, false);
+          this.controller.loadContent(content);
+          return this.controller.play();
+        }
+        // 如果有选择的块或者多个块，朗读这些
+        const blocks = document.querySelectorAll('.protyle-wysiwyg--select');
+        if (blocks.length > 0) {
+          this.controller = new Controller({
+            currentMetadata: this.currentMetadata,
+            playbackRate: this.playbackRate
+          }, this, false);
+          this.controller.loadBlocks([...blocks]);
+          return this.controller.play();
+        }
+        showMessage("没有可以朗读的选中内容");
+      },
+    });
 
     const topBarElement = this.addTopBar({
       icon: "iconRecord",
@@ -688,7 +753,6 @@ module.exports = class TTSPlugin extends Plugin {
 
         // Create a deep clone of the block
         let clone = block.cloneNode(true);
-        
         // Remove sup spans from clone
         let sups = clone.querySelectorAll('span[data-type*="sup"]');
         sups.forEach(sup => sup.remove());
@@ -701,7 +765,7 @@ module.exports = class TTSPlugin extends Plugin {
         label: this.i18n.menuName,
         click: async () => {
           if (this.controller) {
-            this.controller.stop(); 
+            this.controller.stop();
           }
           this.controller = new Controller({
             currentMetadata: this.currentMetadata,
@@ -714,7 +778,7 @@ module.exports = class TTSPlugin extends Plugin {
 
       // Add new menu item for reading from current to end
       detail.menu.addItem({
-        icon: "iconRecord", 
+        icon: "iconRecord",
         label: this.i18n.menuToEnd,
         click: async () => {
           if (this.controller) {
@@ -725,7 +789,6 @@ module.exports = class TTSPlugin extends Plugin {
           const currentBlockId = blocks[0].getAttribute('data-node-id');
           // Get root block ID (document ID)
           const rootID = detail.protyle.block.rootID
-          
           // Get full document DOM
           let res = await this.fetchSyncPost("/api/block/getBlockDOM", { id: rootID });
           let dom = res.data.dom;
@@ -744,14 +807,14 @@ module.exports = class TTSPlugin extends Plugin {
           // Filter blocks from current to end
           let allBlocks = [];
           let currentFound = false;
-            Array.from(doc.body.children).forEach(block => {
-              if(block.getAttribute('data-node-id') === currentBlockId) {
-                currentFound = true;
-              }
-              if(currentFound) {
-                allBlocks.push(block);
-              }
-            });
+          Array.from(doc.body.children).forEach(block => {
+            if (block.getAttribute('data-node-id') === currentBlockId) {
+              currentFound = true;
+            }
+            if (currentFound) {
+              allBlocks.push(block);
+            }
+          });
 
           this.controller = new Controller({
             currentMetadata: this.currentMetadata,
@@ -762,7 +825,6 @@ module.exports = class TTSPlugin extends Plugin {
         },
       });
     });
-    
     this.eventBus.on("click-editortitleicon", async ({ detail }) => {
       detail.menu.addItem({
         icon: "iconRecord",
@@ -801,7 +863,7 @@ module.exports = class TTSPlugin extends Plugin {
 
   }
 
-  async  fetchSyncPost(url, data, returnType = 'json') {
+  async fetchSyncPost(url, data, returnType = 'json') {
     const init = {
       method: "POST",
     };
@@ -817,10 +879,10 @@ module.exports = class TTSPlugin extends Plugin {
       const res2 = returnType === 'json' ? await res.json() : await res.text();
       return res2;
     } catch (e) {
-      console.log(e);
+      console.error(e);
       return returnType === 'json' ? { code: e.code || 1, msg: e.message || "", data: null } : "";
     }
-}
+  }
 
 
   setStatus(content) {
@@ -830,7 +892,6 @@ module.exports = class TTSPlugin extends Plugin {
 
   addMenu(rect) {
     const menu = new Menu("ttsPluginTopBarMenu");
-    
     menu.addItem({
       icon: "iconPause",
       label: this.isPaused ? this.i18n.resume : this.i18n.pause,
@@ -865,7 +926,7 @@ module.exports = class TTSPlugin extends Plugin {
     });
 
     menu.addItem({
-      icon: "iconClose", 
+      icon: "iconClose",
       label: this.i18n.stop,
       click: () => {
         this.controller && this.controller.stop();
@@ -917,7 +978,7 @@ module.exports = class TTSPlugin extends Plugin {
   addStatus() {
     this.statusIconTemp = document.createElement("template");
     this.statusIconTemp.innerHTML = `<div class="toolbar__item">
-      <span class="tts-nav-btn" data-type="pause">
+      <span class="tts-nav-btn" style="margin: 0; padding: 0; font-size: unset;" data-type="pause">
         <svg><use xlink:href="#iconRecord"></use></svg>
       </span>
       <span id="tts-content">${this.i18n.title}</span>
@@ -943,7 +1004,7 @@ module.exports = class TTSPlugin extends Plugin {
     this.addStatusBar({
       element: element,
     });
-    
+
     this.statusIconTemp = element.querySelector("#tts-content");
   }
 
