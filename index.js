@@ -478,6 +478,109 @@ class Player {
   }
 }
 
+class LocalPlayer {
+  status; // 0: stop; 1: playing;
+  content;
+  loaded;
+  loading;
+  voice;
+  id;
+  isEmpty = true;
+  utterance;
+
+  constructor(voiceName, controller, enableLogger) {
+    this.enableLogger = enableLogger;
+    this.controller = controller;
+    this.status = 0;
+    this.loaded = false;
+    this.loading = false;
+    this.voiceName = voiceName;
+    this.id = new Date().getTime();
+  }
+
+  // load block: block obj or string
+  async load(block) {
+    this.isEmpty = block.isEmpty();
+    if (this.isEmpty) {
+      return Promise.resolve();
+    }
+    this.block = block;
+    this.content = block.content;
+    
+    this.enableLogger &&
+      console.log(`[LocalPlayer]\tloading block: '${this.content}'`);
+    
+    // 创建语音合成utterance
+    this.utterance = new SpeechSynthesisUtterance(this.content);
+    
+    // 查找对应的语音
+    const voices = window.speechSynthesis.getVoices();
+    const selectedVoice = voices.find(voice => voice.name === this.voiceName);
+    if (selectedVoice) {
+      this.utterance.voice = selectedVoice;
+    }
+    
+    this.loaded = true;
+    this.loading = false;
+    
+    return Promise.resolve();
+  }
+
+  async setRate(rate) {
+    if (!this.loaded) {
+      await this.load(this.block);
+    }
+    if (this.isEmpty) {
+      return Promise.resolve();
+    }
+    this.utterance.rate = rate;
+  }
+
+  async play() {
+    if (!this.loaded) {
+      await this.load(this.block);
+    }
+    if (this.isEmpty) {
+      return Promise.resolve();
+    }
+    
+    this.block.highlight();
+    
+    return new Promise((resolve) => {
+      this.utterance.onend = () => {
+        this.block.unhighlight();
+        resolve();
+      };
+      
+      this.utterance.onerror = (event) => {
+        console.error('语音合成错误:', event);
+        this.block.unhighlight();
+        resolve();
+      };
+      
+      window.speechSynthesis.speak(this.utterance);
+    });
+  }
+
+  stop() {
+    if (this.utterance) {
+      window.speechSynthesis.cancel();
+    }
+  }
+
+  pause() {
+    if (window.speechSynthesis.speaking) {
+      window.speechSynthesis.pause();
+    }
+  }
+
+  resume() {
+    if (window.speechSynthesis.paused) {
+      window.speechSynthesis.resume();
+    }
+  }
+}
+
 class Block {
   constructor(blockElement) {
     if (!blockElement) {
@@ -534,14 +637,39 @@ class Controller {
     this.plugin = plugin;
     this.init();
     this.maxCache = 3;
-    this.tts = new MsEdgeTTS(false);
-    const { currentMetadata, playbackRate } = config;
+    
+    const { currentMetadata, playbackRate, isLocalVoice } = config;
     this.playbackRate = playbackRate;
-    this.tts.setMetadata(currentMetadata, OUTPUT_FORMAT.WEBM_24KHZ_16BIT_MONO_OPUS);
+    this.currentMetadata = currentMetadata;
+    this.isLocalVoice = isLocalVoice || false;
+    
+    if (this.isLocalVoice) {
+      // 使用本地语音合成，不需要初始化MsEdgeTTS
+      this.tts = null;
+    } else {
+      // 使用在线TTS
+      this.tts = new MsEdgeTTS(false);
+      this.tts.setMetadata(currentMetadata, OUTPUT_FORMAT.WEBM_24KHZ_16BIT_MONO_OPUS);
+    }
   }
 
-  changeMetadata(voice) {
-    this.tts.setMetadata(voice, OUTPUT_FORMAT.WEBM_24KHZ_16BIT_MONO_OPUS);
+  changeMetadata(voice, isLocalVoice = false) {
+    this.currentMetadata = voice;
+    this.isLocalVoice = isLocalVoice;
+    
+    if (this.isLocalVoice) {
+      // 切换到本地语音合成
+      if (this.tts) {
+        this.tts.close();
+        this.tts = null;
+      }
+    } else {
+      // 切换到在线TTS
+      if (!this.tts) {
+        this.tts = new MsEdgeTTS(false);
+      }
+      this.tts.setMetadata(voice, OUTPUT_FORMAT.WEBM_24KHZ_16BIT_MONO_OPUS);
+    }
   }
 
   loadBlocks(blockElements) {
@@ -572,10 +700,19 @@ class Controller {
         this.cacheIndex++;
         continue;
       }
-      const player = new Player(this.tts, this, false);
+      
+      let player;
+      if (this.isLocalVoice) {
+        // 使用本地语音合成播放器
+        player = new LocalPlayer(this.currentMetadata, this, false);
+      } else {
+        // 使用在线TTS播放器
+        player = new Player(this.tts, this, false);
+      }
+      
       player.load(this.blocks[this.cacheIndex]);
       this.enableLogger &&
-        console.log("[Controller]\tCreate player cache", "id=", player.id);
+        console.log("[Controller]\tCreate player cache", "id=", player.id, "type=", this.isLocalVoice ? "local" : "online");
       this.plugin.setStatus(`正在缓存块, 编号: ${this.cacheIndex + 1}`);
       this.players.push(player);
       this.cacheIndex++;
@@ -629,7 +766,17 @@ class Controller {
         return;
       }
     });
-    this.tts.close();
+    
+    // 关闭在线TTS连接
+    if (this.tts) {
+      this.tts.close();
+    }
+    
+    // 停止本地语音合成
+    if (this.isLocalVoice && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    
     const block = this.blocks[this.playIndex];
     if (block) {
       block.unhighlight();
@@ -679,11 +826,53 @@ module.exports = class TTSPlugin extends Plugin {
 
   playbackRate = 1;
 
+  localVoices = [];
+
+  isLocalVoice = false;
+
   async loadStorage() {
     const config = await this.loadData('config.json');
     if (config) {
       this.currentMetadata = config.currentMetadata || DEFAULT_VOICE;
       this.playbackRate = config.playbackRate || 1;
+      this.isLocalVoice = config.isLocalVoice || false;
+    }
+    // 获取本地语音合成声源
+    await this.loadLocalVoices();
+  }
+
+  async loadLocalVoices() {
+    try {
+      // 等待语音合成API准备就绪
+      if ('speechSynthesis' in window) {
+        // 先触发一次getVoices()来确保语音列表加载
+        let voices = window.speechSynthesis.getVoices();
+        
+        // 如果第一次调用返回空数组，等待voiceschanged事件
+        if (voices.length === 0) {
+          await new Promise((resolve) => {
+            const handleVoicesChanged = () => {
+              voices = window.speechSynthesis.getVoices();
+              if (voices.length > 0) {
+                window.speechSynthesis.removeEventListener('voiceschanged', handleVoicesChanged);
+                resolve();
+              }
+            };
+            window.speechSynthesis.addEventListener('voiceschanged', handleVoicesChanged);
+            // 设置超时，避免无限等待
+            setTimeout(() => {
+              window.speechSynthesis.removeEventListener('voiceschanged', handleVoicesChanged);
+              resolve();
+            }, 3000);
+          });
+        }
+        
+        this.localVoices = voices.filter(voice => voice.localService);
+        console.log('本地语音合成声源:', this.localVoices);
+      }
+    } catch (error) {
+      console.error('获取本地语音合成声源失败:', error);
+      this.localVoices = [];
     }
   }
 
@@ -691,6 +880,7 @@ module.exports = class TTSPlugin extends Plugin {
     await this.saveData('config.json', JSON.stringify({
       currentMetadata: this.currentMetadata,
       playbackRate: this.playbackRate,
+      isLocalVoice: this.isLocalVoice,
     }));
   }
 
@@ -699,6 +889,39 @@ module.exports = class TTSPlugin extends Plugin {
     this.controller = null;
 
     this.status = this.i18n.title;
+
+    // 添加工具栏朗读按钮配置
+    this.protyleOptions = {
+      toolbar: ["block-ref",
+        "a",
+        "|",
+        "text",
+        "strong",
+        "em",
+        "u",
+        "s",
+        "mark",
+        "sup",
+        "sub",
+        "clear",
+        "|",
+        "code",
+        "kbd",
+        "tag",
+        "inline-math",
+        "inline-memo",
+        "|",
+        {
+          name: "tts-read",
+          icon: "iconRecord",
+          tipPosition: "n",
+          tip: this.i18n.toolbarTip,
+          click: (protyle) => {
+            this.handleToolbarTTSClick(protyle);
+          }
+        }
+      ],
+    };
 
     this.addCommand({
       langKey: "quickOpen",
@@ -709,7 +932,8 @@ module.exports = class TTSPlugin extends Plugin {
         if (content) {
           this.controller = new Controller({
             currentMetadata: this.currentMetadata,
-            playbackRate: this.playbackRate
+            playbackRate: this.playbackRate,
+            isLocalVoice: this.isLocalVoice
           }, this, false);
           this.controller.loadContent(content);
           return this.controller.play();
@@ -719,7 +943,8 @@ module.exports = class TTSPlugin extends Plugin {
         if (blocks.length > 0) {
           this.controller = new Controller({
             currentMetadata: this.currentMetadata,
-            playbackRate: this.playbackRate
+            playbackRate: this.playbackRate,
+            isLocalVoice: this.isLocalVoice
           }, this, false);
           this.controller.loadBlocks([...blocks]);
           return this.controller.play();
@@ -769,7 +994,8 @@ module.exports = class TTSPlugin extends Plugin {
           }
           this.controller = new Controller({
             currentMetadata: this.currentMetadata,
-            playbackRate: this.playbackRate
+            playbackRate: this.playbackRate,
+            isLocalVoice: this.isLocalVoice
           }, this, false);
           this.controller.loadBlocks(blocks);
           this.controller.play();
@@ -818,7 +1044,8 @@ module.exports = class TTSPlugin extends Plugin {
 
           this.controller = new Controller({
             currentMetadata: this.currentMetadata,
-            playbackRate: this.playbackRate
+            playbackRate: this.playbackRate,
+            isLocalVoice: this.isLocalVoice
           }, this, false);
           this.controller.loadBlocks(allBlocks);
           this.controller.play();
@@ -851,7 +1078,8 @@ module.exports = class TTSPlugin extends Plugin {
           }
           this.controller = new Controller({
             currentMetadata: this.currentMetadata,
-            playbackRate: this.playbackRate
+            playbackRate: this.playbackRate,
+            isLocalVoice: this.isLocalVoice
           }, this, false);
           this.controller.loadBlocks(blocks);
           this.controller.play();
@@ -884,6 +1112,64 @@ module.exports = class TTSPlugin extends Plugin {
     }
   }
 
+  handleToolbarTTSClick(protyle) {
+    // 获取当前选中的文本
+    const selection = window.getSelection();
+    const selectedText = selection.toString().trim();
+    
+    if (selectedText) {
+      // 如果有选中文本，朗读选中的文本
+      if (this.controller) {
+        this.controller.stop();
+      }
+      this.controller = new Controller({
+        currentMetadata: this.currentMetadata,
+        playbackRate: this.playbackRate,
+        isLocalVoice: this.isLocalVoice
+      }, this, false);
+      this.controller.loadContent(selectedText);
+      this.controller.play();
+      return;
+    }
+    
+    // 如果没有选中文本，获取当前光标所在的块
+    const range = selection.getRangeAt(0);
+    const currentElement = range.commonAncestorContainer;
+    
+    // 向上查找最近的块元素
+    let blockElement = currentElement;
+    while (blockElement && blockElement.nodeType !== Node.ELEMENT_NODE) {
+      blockElement = blockElement.parentNode;
+    }
+    
+    while (blockElement && !blockElement.hasAttribute('data-node-id')) {
+      blockElement = blockElement.parentNode;
+    }
+    
+    if (blockElement && blockElement.hasAttribute('data-node-id')) {
+      // 朗读当前块
+      if (this.controller) {
+        this.controller.stop();
+      }
+      
+      // 创建块的副本并清理
+      let clone = blockElement.cloneNode(true);
+      // 移除上标元素
+      let sups = clone.querySelectorAll('span[data-type*="sup"]');
+      sups.forEach(sup => sup.remove());
+      
+      this.controller = new Controller({
+        currentMetadata: this.currentMetadata,
+        playbackRate: this.playbackRate,
+        isLocalVoice: this.isLocalVoice
+      }, this, false);
+      this.controller.loadBlocks([clone]);
+      this.controller.play();
+    } else {
+      // 如果找不到块，显示提示消息
+      showMessage("请选择文本或将光标放在要朗读的块中");
+    }
+  }
 
   setStatus(content) {
     this.status = content;
@@ -933,22 +1219,49 @@ module.exports = class TTSPlugin extends Plugin {
       },
     });
 
-    const sumMenus = Object.keys(this.metadataMap).map((v) => {
+    // 在线声源菜单
+    const onlineMenus = Object.keys(this.metadataMap).map((v) => {
       return {
-        icon: this.metadataMap[v] === this.currentMetadata ? 'iconSelect' : '',
-        label: v,
+        icon: (!this.isLocalVoice && this.metadataMap[v] === this.currentMetadata) ? 'iconSelect' : '',
+        label: `🌐 ${v}`,
         click: () => {
           this.currentMetadata = this.metadataMap[v];
+          this.isLocalVoice = false;
           this.saveStorage();
+          // 如果当前有控制器，更新其声源设置
+          if (this.controller) {
+            this.controller.changeMetadata(this.currentMetadata, false);
+          }
         },
       };
     });
+
+    // 本地声源菜单
+    const localMenus = this.localVoices.map((voice) => {
+      const displayName = `${voice.name} (${voice.lang})`;
+      return {
+        icon: (this.isLocalVoice && this.currentMetadata === voice.name) ? 'iconSelect' : '',
+        label: `🎤 ${displayName}`,
+        click: () => {
+          this.currentMetadata = voice.name;
+          this.isLocalVoice = true;
+          this.saveStorage();
+          // 如果当前有控制器，更新其声源设置
+          if (this.controller) {
+            this.controller.changeMetadata(voice.name, true);
+          }
+        },
+      };
+    });
+
+    // 合并菜单
+    const allVoiceMenus = [...onlineMenus, ...localMenus];
 
     menu.addItem({
       icon: "",
       label: this.i18n.changeMetadata,
       type: "submenu",
-      submenu: sumMenus,
+      submenu: allVoiceMenus,
     });
     menu.open({
       x: rect.right,
