@@ -12,6 +12,8 @@
 
 ## Changelog 变更记录
 
+v1.1.0 - 修正微软地址无法使用的问题，切换成新版的了。
+
 v1.0.0 - 修正微软地址无法使用的问题、增加了快捷键Ctrl+alt+W快速朗读选择的内容和命令面板操作。
 
 v0.2.7 - PR from Achuan, thanks for contribution

@@ -30,34 +30,311 @@ const OUTPUT_FORMAT = {
 
 const { randomBytes, createHash } = window.require("crypto");
 const stream = window.require("stream");
+const net = window.require("net");
+const tls = window.require("tls");
+const { EventEmitter } = window.require("events");
+const { URL } = window.require("url");
 
-const CHROMIUM_FULL_VERSION = '130.0.2849.68'
+const logger = {
+  level: 'warn', // 'info', 'warn', 'error'
+  info: (...args) => ['info'].includes(logger.level) && console.log(...args),
+  warn: (...args) => ['info', 'warn'].includes(logger.level) && console.warn(...args),
+  error: (...args) => ['info', 'warn', 'error'].includes(logger.level) && console.error(...args),
+};
+
+class NodeWebSocket extends EventEmitter {
+  constructor(url, options = {}) {
+    super();
+    this.url = new URL(url);
+    this.options = options;
+    this.socket = null;
+    this.connected = false;
+    this.buffer = Buffer.alloc(0);
+    this.isHandshakeComplete = false;
+    this.readyState = 0; // 0: CONNECTING, 1: OPEN, 2: CLOSING, 3: CLOSED
+    this.fragments = [];
+    this.fragmentOpcode = 0;
+  }
+
+  connect() {
+    const isSecure = this.url.protocol === 'wss:';
+    const port = this.url.port || (isSecure ? 443 : 80);
+    const host = this.url.hostname;
+
+    const connectOptions = {
+      host: this.options.host || host,
+      port: port,
+      rejectUnauthorized: this.options.rejectUnauthorized !== false
+    };
+
+    const connectModule = isSecure ? tls : net;
+
+    this.socket = connectModule.connect(connectOptions, () => {
+      this._sendHandshake();
+    });
+
+    this.socket.on('data', (data) => {
+      this.buffer = Buffer.concat([this.buffer, data]);
+      if (!this.isHandshakeComplete) {
+        this._handleHandshake();
+      } else {
+        this._processFrames();
+      }
+    });
+
+    this.socket.on('close', () => {
+      this.connected = false;
+      this.readyState = 3;
+      if (this.onclose) this.onclose();
+      this.emit('close');
+    });
+
+    this.socket.on('error', (err) => {
+      // Ignore ECONNRESET errors as they are common when closing connection
+      if (err.code === 'ECONNRESET' || err.code === 'EPIPE') {
+          this.connected = false;
+          this.readyState = 3;
+          if (this.onclose) this.onclose();
+          this.emit('close');
+          return;
+      }
+      this.readyState = 3;
+      if (this.onerror) this.onerror(err);
+      this.emit('error', err);
+    });
+  }
+
+  send(data) {
+    if (this.readyState !== 1) throw new Error('WebSocket is not open');
+
+    let opcode;
+    let payload;
+
+    if (typeof data === 'string') {
+      opcode = 0x1; // TEXT
+      payload = Buffer.from(data, 'utf8');
+    } else if (Buffer.isBuffer(data)) {
+      opcode = 0x2; // BINARY
+      payload = data;
+    } else {
+      throw new Error('Data must be string or Buffer');
+    }
+
+    this._writeFrame(opcode, payload);
+  }
+
+  close() {
+    if (this.readyState === 3) return;
+    this.readyState = 2;
+    this.fragments = [];
+    this.fragmentOpcode = 0;
+    // Send close frame
+    const payload = Buffer.alloc(2);
+    payload.writeUInt16BE(1000, 0);
+    this._writeFrame(0x8, payload);
+    // Do not end socket immediately, wait for server close or timeout
+    // this.socket.end(); 
+  }
+
+  _sendHandshake() {
+    const key = randomBytes(16).toString('base64');
+    this.expectedAccept = createHash('sha1')
+      .update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')
+      .digest('base64');
+
+    const headers = [
+      `GET ${this.url.pathname}${this.url.search} HTTP/1.1`,
+      `Host: ${this.url.hostname}:${this.url.port || (this.url.protocol === 'wss:' ? 443 : 80)}`,
+      'Upgrade: websocket',
+      'Connection: Upgrade',
+      `Sec-WebSocket-Key: ${key}`,
+      'Sec-WebSocket-Version: 13'
+    ];
+
+    if (this.options.origin) {
+        headers.push(`Origin: ${this.options.origin}`);
+    }
+
+    if (this.options.headers) {
+      for (const [k, v] of Object.entries(this.options.headers)) {
+        if (k.toLowerCase() === 'origin' && this.options.origin) continue; // Skip if handled above
+        headers.push(`${k}: ${v}`);
+      }
+    }
+
+    this.socket.write(headers.join('\r\n') + '\r\n\r\n');
+  }
+
+  _handleHandshake() {
+    const idx = this.buffer.indexOf('\r\n\r\n');
+    if (idx === -1) return;
+
+    const headers = this.buffer.slice(0, idx).toString().split('\r\n');
+    this.buffer = this.buffer.slice(idx + 4);
+
+    const statusLine = headers[0];
+    if (!statusLine.includes('101')) {
+      const err = new Error(`Unexpected server response: ${statusLine}`);
+      if (this.onerror) this.onerror(err);
+      this.socket.end();
+      return;
+    }
+
+    this.isHandshakeComplete = true;
+    this.connected = true;
+    this.readyState = 1;
+    if (this.onopen) this.onopen();
+    this.emit('open');
+
+    if (this.buffer.length > 0) {
+      this._processFrames();
+    }
+  }
+
+  _writeFrame(opcode, payload) {
+    if (this.socket.destroyed || !this.socket.writable) return;
+
+    const length = payload.length;
+    let frameSize = 2;
+    let lengthByte = 0;
+
+    if (length < 126) {
+      lengthByte = length;
+    } else if (length < 65536) {
+      frameSize += 2;
+      lengthByte = 126;
+    } else {
+      frameSize += 8;
+      lengthByte = 127;
+    }
+
+    frameSize += 4; // Masking key is mandatory for client-to-server
+
+    const frame = Buffer.alloc(frameSize + length);
+    frame[0] = 0x80 | opcode;
+    frame[1] = 0x80 | lengthByte;
+
+    let payloadOffset = 2;
+    if (lengthByte === 126) {
+      frame.writeUInt16BE(length, 2);
+      payloadOffset += 2;
+    } else if (lengthByte === 127) {
+      frame.writeUInt32BE(0, 2);
+      frame.writeUInt32BE(length, 6);
+      payloadOffset += 8;
+    }
+
+    const maskKey = randomBytes(4);
+    maskKey.copy(frame, payloadOffset);
+    payloadOffset += 4;
+
+    for (let i = 0; i < length; i++) {
+      frame[payloadOffset + i] = payload[i] ^ maskKey[i % 4];
+    }
+
+    this.socket.write(frame);
+  }
+
+  _processFrames() {
+    while (this.buffer.length >= 2) {
+      const firstByte = this.buffer[0];
+      const secondByte = this.buffer[1];
+      const fin = (firstByte & 0x80) === 0x80;
+      const opcode = firstByte & 0x0F;
+      const masked = (secondByte & 0x80) === 0x80;
+      let payloadLen = secondByte & 0x7F;
+      let headerSize = 2;
+
+      if (payloadLen === 126) {
+        if (this.buffer.length < 4) return;
+        payloadLen = this.buffer.readUInt16BE(2);
+        headerSize += 2;
+      } else if (payloadLen === 127) {
+        if (this.buffer.length < 10) return;
+        const high = this.buffer.readUInt32BE(2);
+        const low = this.buffer.readUInt32BE(6);
+        payloadLen = low;
+        headerSize += 8;
+      }
+
+      if (masked) headerSize += 4;
+
+      if (this.buffer.length < headerSize + payloadLen) return;
+
+      let payload = this.buffer.slice(headerSize, headerSize + payloadLen);
+      if (masked) {
+        const maskKey = this.buffer.slice(headerSize - 4, headerSize);
+        const unmasked = Buffer.alloc(payload.length);
+        for (let i = 0; i < payload.length; i++) {
+          unmasked[i] = payload[i] ^ maskKey[i % 4];
+        }
+        payload = unmasked;
+      }
+
+      this.buffer = this.buffer.slice(headerSize + payloadLen);
+
+      if (opcode === 0x0) { // CONTINUATION
+        if (this.fragmentOpcode === 0) {
+          continue;
+        }
+        this.fragments.push(payload);
+        if (fin) {
+          const fullPayload = Buffer.concat(this.fragments);
+          if (this.fragmentOpcode === 0x1) { // TEXT
+            if (this.onmessage) this.onmessage({ data: fullPayload.toString('utf8') });
+          } else if (this.fragmentOpcode === 0x2) { // BINARY
+            if (this.onmessage) this.onmessage({ data: new Blob([fullPayload]) });
+          }
+          this.fragments = [];
+          this.fragmentOpcode = 0;
+        }
+      } else if (opcode === 0x1 || opcode === 0x2) { // TEXT or BINARY
+        if (!fin) {
+          this.fragmentOpcode = opcode;
+          this.fragments.push(payload);
+        } else {
+          if (opcode === 0x1) {
+            if (this.onmessage) this.onmessage({ data: payload.toString('utf8') });
+          } else {
+            if (this.onmessage) this.onmessage({ data: new Blob([payload]) });
+          }
+        }
+      } else if (opcode === 0x8) { // CLOSE
+        this.close();
+      }
+    }
+  }
+}
+const CHROMIUM_FULL_VERSION = '143.0.3650.75'
 const TRUSTED_CLIENT_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4'
 const WINDOWS_FILE_TIME_EPOCH = 11644473600n
-const SEC_MS_GEC_Version = "1-130.0.2849.68";
+const SEC_MS_GEC_Version = "1-143.0.3650.75";
 
 function generateSecMsGecToken() {
   const ticks = BigInt(Math.floor((Date.now() / 1000) + Number(WINDOWS_FILE_TIME_EPOCH))) * 10000000n
   const roundedTicks = ticks - (ticks % 3000000000n)
+
   const strToHash = `${roundedTicks}${TRUSTED_CLIENT_TOKEN}`
+
   const hash = createHash('sha256')
   hash.update(strToHash, 'ascii')
+
   return hash.digest('hex').toUpperCase()
 }
 
 
 function combineUrl(url) {
-  return `${url}&Sec-MS-GEC=${generateSecMsGecToken()}&Sec-MS-GEC-Version=${SEC_MS_GEC_Version}`
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}TrustedClientToken=${TRUSTED_CLIENT_TOKEN}&Sec-MS-GEC=${generateSecMsGecToken()}&Sec-MS-GEC-Version=${SEC_MS_GEC_Version}`
 }
 
 class MsEdgeTTS {
   static OUTPUT_FORMAT = OUTPUT_FORMAT;
   static TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
-  static VOICES_URL = `https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/voices/list?trustedclienttoken=${MsEdgeTTS.TRUSTED_CLIENT_TOKEN}`;
-  static SYNTH_URL = `wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=${MsEdgeTTS.TRUSTED_CLIENT_TOKEN}`;
+  static VOICES_URL = `https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/voices/list`;
+  static SYNTH_URL = `wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1`;
   static BINARY_DELIM = "Path:audio\r\n";
   static VOICE_LANG_REGEX = /\w{2}-\w{2}/;
-  _enableLogger;
   _ws;
   _connection;
   _voice;
@@ -69,25 +346,12 @@ class MsEdgeTTS {
   _requestContent = {};
   _finished = {};
 
-  /**
-   * Create a new `MsEdgeTTS` instance.
-   *
-   * @param enableLogger=false whether to enable the built-in logger. This logs connections inits, disconnects, and incoming data to the console
-   */
-  constructor(enableLogger = false) {
-    this._enableLogger = enableLogger;
-  }
 
   async _send(message) {
     await this._initClient();
     return this._ws.send(message);
   }
 
-  // _connect() {
-  //     if (this._enableLogger) this._startTime = Date.now();
-  //     this._ws.connect(MsEdgeTTS.SYNTH_URL);
-  //     return new Promise((resolve) => this._ws.once("connect", resolve));
-  // }
 
   close() {
     this._ws && this._ws.close();
@@ -101,7 +365,7 @@ class MsEdgeTTS {
       const messageQueue = [];
 
       const checkAndSend = (id, index) => {
-        this._enableLogger && console.log("[TTS]\tchecking", id, index);
+        logger.info("[TTS]\tchecking", id, index);
         const cache = [];
         if (!this._end[id]) {
           return;
@@ -109,7 +373,7 @@ class MsEdgeTTS {
         let j = 0;
         for (; j <= index; j++) {
           if (!messageQueue[j]) {
-            this._enableLogger && console.log("[TTS]\tCheck found null", id, j);
+            logger.info("[TTS]\tCheck found null", id, j);
             return false;
           }
           if (messageQueue[j].id !== id) {
@@ -122,8 +386,7 @@ class MsEdgeTTS {
         for (const audio of cache) {
           this._queue[id].push(audio);
         }
-        this._enableLogger &&
-          console.log(
+        logger.info(
             "[TTS]\tCheck finished",
             id,
             index,
@@ -137,8 +400,7 @@ class MsEdgeTTS {
       const checkEndedNotFinished = () => {
         for (const k in this._end) {
           if (!this._finished[k]) {
-            this._enableLogger &&
-              console.log(
+            logger.info(
                 "[TTS]\tChecking ended request but not finished",
                 k,
                 this._end[k],
@@ -149,12 +411,29 @@ class MsEdgeTTS {
         }
       };
       let i = 0;
-      this._ws = new WebSocket(combineUrl(MsEdgeTTS.SYNTH_URL));
+      this._ws = new NodeWebSocket(combineUrl(MsEdgeTTS.SYNTH_URL), {
+        host: 'speech.platform.bing.com',
+        origin: 'chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold',
+        headers: {
+          'Pragma': 'no-cache',
+          'Cache-Control': 'no-cache',
+          'User-Agent': `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROMIUM_FULL_VERSION.split('.')[0]}.0.0.0 Safari/537.36 Edg/${CHROMIUM_FULL_VERSION.split('.')[0]}.0.0.0`,
+          'Origin': 'chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold',
+          'Accept-Encoding': 'gzip, deflate, br, zstd',
+          'Accept-Language': 'en-US,en;q=0.9'
+        },
+        rejectUnauthorized: false
+      });
+      this._ws.connect();
       this._ws.onmessage = (m) => {
         if (typeof m.data === "string") {
           // const data = m.data;
           const data = Buffer.from(m.data);
           const res = /X-RequestId:(.*?)\r\n/gm.exec(data);
+          if (!res) {
+            logger.warn("UNKNOWN STRING MESSAGE", data);
+            return;
+          }
           const requestId = res[1];
           if (data.includes("Path:turn.start")) {
             // start of turn, ignore
@@ -163,8 +442,7 @@ class MsEdgeTTS {
             // end of turn, close stream
             this._end[requestId] = i;
             messageQueue[i] = { id: requestId, type: "end" };
-            this._enableLogger &&
-              console.log(
+            logger.info(
                 "[TTS]\tEnd: ",
                 this._requestContent[requestId],
                 requestId
@@ -173,10 +451,9 @@ class MsEdgeTTS {
             // context response, ignore
             messageQueue[i] = { id: requestId, type: "ignore" };
           } else {
-            this.enableLogger && console.log("UNKNOWN MESSAGE", data);
+            logger.warn("UNKNOWN MESSAGE", data);
           }
-          this._enableLogger &&
-            console.log(
+          logger.info(
               "[TTS]\tString set: ",
               i,
               messageQueue[i],
@@ -191,6 +468,15 @@ class MsEdgeTTS {
           blob.arrayBuffer().then((buffer) => {
             const data = new Buffer(buffer);
             const res = /X-RequestId:(.*?)\r\n/gm.exec(data);
+            if (!res || !res[1]) {
+              logger.error("UNKNOWN Blob data", data)
+              try {
+                const d = data.toString();
+                logger.info(d);
+              } finally {
+                return;
+              }
+            }
             const requestId = res[1];
             if (data[0] === 0x00 && data[1] === 0x67 && data[2] === 0x58) {
               // ignore
@@ -202,24 +488,22 @@ class MsEdgeTTS {
               const audioData = data.slice(index, data.length);
               messageQueue[cur] = { id: requestId, data: audioData };
             }
-            this._enableLogger &&
-              console.log("[TTS]\tblob set:", cur, messageQueue[cur]);
+            logger.info("[TTS]\tblob set:", cur, messageQueue[cur]);
             checkAndSend(requestId, this._end[requestId] || -1);
             checkEndedNotFinished();
           });
         } else {
-          this._enableLogger && console.warn("[TTS]\t UNKNOWN type of m.data");
+          console.warn("[TTS]\t UNKNOWN type of m.data");
         }
         i++;
       };
       this._ws.onclose = () => {
-        this._enableLogger && console.log("[TTS]\tdisconnected");
+        logger.info("[TTS]\tdisconnected");
         this.wsInitPromise = null;
       };
       this._ws.onopen = (connection) => {
         this._connection = connection;
-        this._enableLogger &&
-          console.log(
+        logger.info(
             "[TTS]\tConnected in",
             (Date.now() - this._startTime) / 1000,
             "seconds"
@@ -374,8 +658,7 @@ class Player {
 
   loadPromise;
 
-  constructor(tts, controller, enableLogger) {
-    this.enableLogger = enableLogger;
+  constructor(tts, controller) {
     this.controller = controller;
     this.status = 0;
     this.loaded = false;
@@ -396,8 +679,7 @@ class Player {
     if (this.loadPromise) {
       return this.loadPromise;
     }
-    this.enableLogger &&
-      console.log(`[Player]\tloading block: '${this.content}'`);
+    logger.info(`[Player]\tloading block: '${this.content}'`);
     const context = new AudioContext();
     const buffers = [];
     this.loading = true;
@@ -529,12 +811,11 @@ class Controller {
   playIndex;
   cacheIndex;
 
-  constructor(config, plugin, enableLogger) {
-    this.enableLogger = enableLogger;
+  constructor(config, plugin) {
     this.plugin = plugin;
     this.init();
     this.maxCache = 3;
-    this.tts = new MsEdgeTTS(false);
+    this.tts = new MsEdgeTTS(true);
     const { currentMetadata, playbackRate } = config;
     this.playbackRate = playbackRate;
     this.tts.setMetadata(currentMetadata, OUTPUT_FORMAT.WEBM_24KHZ_16BIT_MONO_OPUS);
@@ -556,8 +837,7 @@ class Controller {
   }
 
   async play() {
-    this.enableLogger &&
-      console.log(
+    logger.info(
         "[Controller]\tgoing to play, checking cache",
         this.playIndex,
         this.blocks
@@ -568,28 +848,25 @@ class Controller {
       this.cacheIndex < this.blocks.length
     ) {
       if (this.blocks[this.cacheIndex].isEmpty()) {
-        this.enableLogger && console.log("[Controller]\tskip empty block");
+        logger.info("[Controller]\tskip empty block");
         this.cacheIndex++;
         continue;
       }
       const player = new Player(this.tts, this, false);
       player.load(this.blocks[this.cacheIndex]);
-      this.enableLogger &&
-        console.log("[Controller]\tCreate player cache", "id=", player.id);
+      logger.info("[Controller]\tCreate player cache", "id=", player.id);
       this.plugin.setStatus(`正在缓存块, 编号: ${this.cacheIndex + 1}`);
       this.players.push(player);
       this.cacheIndex++;
     }
-    this.enableLogger &&
-      console.log(
+    logger.info(
         "[Controller]\tcheck finished, ready to play",
         this.playIndex
       );
     const player = this.players[0];
     if (!player) {
       this.stop();
-      this.enableLogger &&
-        console.log(
+      logger.info(
           "[Controller]\tNo player in cache, going to clean and stop",
           this.playIndex
         );
@@ -603,8 +880,7 @@ class Controller {
       iconEl.setAttribute('xlink:href', '#iconPause');
     }
 
-    this.enableLogger &&
-      console.log(
+    logger.info(
         "[Controller]\tplaying =>>> ",
         player.content,
         this.playIndex
@@ -614,8 +890,7 @@ class Controller {
     );
     await player.setRate(this.playbackRate);
     await player.play();
-    this.enableLogger &&
-      console.log("[Controller]\tplayed =>>>", player.content, this.playIndex);
+    logger.info("[Controller]\tplayed =>>>", player.content, this.playIndex);
     this.players.shift();
     this.playIndex++;
     this.play();
